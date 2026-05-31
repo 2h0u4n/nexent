@@ -41,6 +41,8 @@ from backend.services.prompt_service import (
     join_info_for_generate_system_prompt,
     join_info_for_optimize_prompt_section,
     optimize_prompt_section_impl,
+    optimize_prompt_section_stream_impl,
+    optimize_prompt_section_streamable,
 )
 
 
@@ -112,6 +114,84 @@ class TestPromptService(unittest.TestCase):
             context.exception.error_code,
             ErrorCode.COMMON_MISSING_REQUIRED_FIELD
         )
+
+    @patch('backend.services.prompt_service.call_llm_for_system_prompt')
+    @patch('backend.services.prompt_service.get_prompt_optimize_prompt_template')
+    @patch('backend.services.prompt_service.query_tools_by_ids')
+    @patch('backend.services.prompt_service.search_agent_info_by_agent_id')
+    def test_optimize_prompt_section_stream_impl_success(
+        self,
+        mock_search_agent_info,
+        mock_query_tools,
+        mock_get_prompt_template,
+        mock_call_llm,
+    ):
+        mock_query_tools.return_value = [
+            {"name": "tool1", "description": "Tool 1", "inputs": "{}", "output_type": "text"}
+        ]
+        mock_search_agent_info.return_value = {"name": "assistant1", "description": "Assistant 1"}
+        mock_get_prompt_template.return_value = {
+            "OPTIMIZE_SYSTEM_PROMPT": "Optimize section",
+            "OPTIMIZE_USER_PROMPT": "Section {{ section_type }} {{ current_content }} {{ feedback }}"
+        }
+
+        def mock_call(model_id, user_prompt, system_prompt, callback=None, tenant_id=None):
+            if callback:
+                callback("Optimized content")
+            return "Optimized content"
+
+        mock_call_llm.side_effect = mock_call
+
+        result = list(optimize_prompt_section_stream_impl(
+            agent_id=1,
+            model_id=2,
+            task_description="Build an agent",
+            tenant_id="tenant-1",
+            language="en",
+            section_type="duty",
+            section_title="Agent Role",
+            current_content="Original duty",
+            feedback="Make it more specific",
+            tool_ids=[10],
+            sub_agent_ids=[20],
+            knowledge_base_display_names=["kb-a"],
+        ))
+
+        self.assertEqual(result[0]["type"], "optimized_section")
+        self.assertEqual(result[-1]["content"], "Optimized content")
+        self.assertTrue(result[-1]["is_complete"])
+        mock_call_llm.assert_called_once()
+
+    @patch('backend.services.prompt_service.optimize_prompt_section_stream_impl')
+    def test_optimize_prompt_section_streamable(self, mock_stream_impl):
+        mock_stream_impl.return_value = iter([
+            {
+                "type": "optimized_section",
+                "section_type": "duty",
+                "section_title": "Agent Role",
+                "content": "Optimized content",
+                "is_complete": True,
+            }
+        ])
+
+        result = list(optimize_prompt_section_streamable(
+            agent_id=1,
+            model_id=2,
+            task_description="Build an agent",
+            tenant_id="tenant-1",
+            language="en",
+            section_type="duty",
+            section_title="Agent Role",
+            current_content="Original duty",
+            feedback="Make it more specific",
+            tool_ids=[10],
+            sub_agent_ids=[20],
+            knowledge_base_display_names=["kb-a"],
+        ))
+
+        payload = json.loads(result[0].replace("data: ", "").replace("\n\n", ""))
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["data"]["content"], "Optimized content")
 
     @patch('backend.services.prompt_service.Template')
     def test_join_info_for_optimize_prompt_section(self, mock_template):

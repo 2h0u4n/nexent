@@ -8,6 +8,7 @@ from consts.model import GeneratePromptRequest, OptimizePromptSectionRequest
 from services.prompt_service import (
     gen_system_prompt_streamable,
     optimize_prompt_section_impl,
+    optimize_prompt_section_streamable,
 )
 from utils.auth_utils import get_current_user_info
 
@@ -72,4 +73,35 @@ async def optimize_prompt_section_api(
         )
     except Exception as exc:
         logger.exception(f"Error occurred while optimizing prompt section: {exc}")
+        raise
+
+
+@router.post("/optimize/stream")
+async def optimize_prompt_section_stream_api(
+        optimize_request: OptimizePromptSectionRequest,
+        http_request: Request,
+        authorization: Optional[str] = Header(None)
+):
+    try:
+        _, tenant_id, language = get_current_user_info(
+            authorization, http_request)
+        return StreamingResponse(
+            optimize_prompt_section_streamable(
+                agent_id=optimize_request.agent_id,
+                model_id=optimize_request.model_id,
+                task_description=optimize_request.task_description,
+                tenant_id=tenant_id,
+                language=language,
+                section_type=optimize_request.section_type,
+                section_title=optimize_request.section_title,
+                current_content=optimize_request.current_content,
+                feedback=optimize_request.feedback,
+                tool_ids=optimize_request.tool_ids,
+                sub_agent_ids=optimize_request.sub_agent_ids,
+                knowledge_base_display_names=optimize_request.knowledge_base_display_names,
+            ),
+            media_type="text/event-stream"
+        )
+    except Exception as exc:
+        logger.exception(f"Error occurred while streaming optimized prompt section: {exc}")
         raise

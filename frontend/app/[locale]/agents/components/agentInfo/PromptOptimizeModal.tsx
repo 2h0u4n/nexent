@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { App, Button, Card, Input, Modal, Space, Typography } from "antd";
 
 import log from "@/lib/logger";
-import { optimizePromptSection } from "@/services/promptService";
-import type { OptimizePromptSectionResponse } from "@/types/agentConfig";
+import { optimizePromptSectionStream } from "@/services/promptService";
+import { OPTIMIZE_PROMPT_STREAM_TYPES } from "@/const/agentConfig";
 
 const { TextArea } = Input;
 const { Paragraph, Text } = Typography;
@@ -43,9 +43,14 @@ export default function PromptOptimizeModal({
   const [feedback, setFeedback] = useState("");
   const [optimizedContent, setOptimizedContent] = useState("");
   const [isOptimizing, setIsOptimizing] = useState(false);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     if (!open) {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
       setFeedback("");
       setOptimizedContent("");
       setIsOptimizing(false);
@@ -56,15 +61,32 @@ export default function PromptOptimizeModal({
     setOptimizedContent("");
   }, [open, sectionType, currentContent]);
 
+  useEffect(() => {
+    return () => {
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
+    };
+  }, []);
+
   const handleOptimize = async () => {
     if (!feedback.trim()) {
       message.error(t("systemPrompt.optimize.feedbackRequired"));
       return;
     }
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
     setIsOptimizing(true);
-    try {
-      const result: OptimizePromptSectionResponse = await optimizePromptSection({
+    setOptimizedContent("");
+
+    await optimizePromptSectionStream(
+      {
         agent_id: agentId,
         task_description: taskDescription,
         model_id: String(modelId),
@@ -75,14 +97,24 @@ export default function PromptOptimizeModal({
         tool_ids: toolIds,
         sub_agent_ids: subAgentIds,
         knowledge_base_display_names: knowledgeBaseDisplayNames,
-      });
-      setOptimizedContent(result.optimized_content || "");
-    } catch (error: any) {
-      log.error("Optimize prompt section failed:", error);
-      message.error(error?.message || t("systemPrompt.optimize.error"));
-    } finally {
-      setIsOptimizing(false);
-    }
+      },
+      (data) => {
+        if (data.type === OPTIMIZE_PROMPT_STREAM_TYPES.OPTIMIZED_SECTION) {
+          setOptimizedContent(data.content || "");
+        }
+      },
+      (error: any) => {
+        abortControllerRef.current = null;
+        setIsOptimizing(false);
+        log.error("Optimize prompt section stream failed:", error);
+        message.error(error?.message || t("systemPrompt.optimize.error"));
+      },
+      () => {
+        abortControllerRef.current = null;
+        setIsOptimizing(false);
+      },
+      { signal: abortController.signal }
+    );
   };
 
   const handleReplace = () => {
@@ -92,15 +124,24 @@ export default function PromptOptimizeModal({
     onReplace(optimizedContent);
   };
 
+  const handleClose = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsOptimizing(false);
+    onClose();
+  };
+
   return (
     <Modal
       title={title}
       open={open}
-      onCancel={onClose}
+      onCancel={handleClose}
       width={1200}
       footer={
         <Space>
-          <Button onClick={onClose}>
+          <Button onClick={handleClose}>
             {t("common.cancel")}
           </Button>
           <Button

@@ -3,7 +3,10 @@ import type { Dispatch, SetStateAction } from "react";
 
 import { ChatMessageType } from "./chat";
 import { ModelOption } from "@/types/modelConfig";
-import { GENERATE_PROMPT_STREAM_TYPES } from "../const/agentConfig";
+import {
+  GENERATE_PROMPT_STREAM_TYPES,
+  OPTIMIZE_PROMPT_STREAM_TYPES,
+} from "../const/agentConfig";
 
 export type AgentBusinessInfo = Partial<Pick<
   Agent,
@@ -437,6 +440,14 @@ export interface OptimizePromptSectionResponse {
   section_title: string;
   original_content: string;
   optimized_content: string;
+}
+
+export interface OptimizePromptSectionStreamData {
+  type: (typeof OPTIMIZE_PROMPT_STREAM_TYPES)[keyof typeof OPTIMIZE_PROMPT_STREAM_TYPES];
+  section_type: "duty" | "constraint" | "few_shots";
+  section_title: string;
+  content: string;
+  is_complete: boolean;
 }
 
 /**

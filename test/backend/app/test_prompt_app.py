@@ -65,3 +65,51 @@ def test_optimize_prompt_section_api_success(
         sub_agent_ids=[20],
         knowledge_base_display_names=["kb-a"],
     )
+
+
+@patch("apps.prompt_app.get_current_user_info")
+@patch("apps.prompt_app.optimize_prompt_section_streamable")
+def test_optimize_prompt_section_stream_api_success(
+    mock_optimize_prompt_section_streamable,
+    mock_get_current_user_info,
+):
+    mock_get_current_user_info.return_value = ("user-1", "tenant-1", "en")
+    mock_optimize_prompt_section_streamable.return_value = iter([
+        'data: {"success": true, "data": {"type": "optimized_section", "section_type": "duty", "section_title": "Agent Role", "content": "Optimized", "is_complete": true}}\n\n'
+    ])
+
+    response = client.post(
+        "/prompt/optimize/stream",
+        json={
+            "task_description": "Build an agent",
+            "agent_id": 1,
+            "model_id": 2,
+            "section_type": "duty",
+            "section_title": "Agent Role",
+            "current_content": "Original",
+            "feedback": "Make it clearer",
+            "tool_ids": [10],
+            "sub_agent_ids": [20],
+            "knowledge_base_display_names": ["kb-a"],
+        },
+        headers={"Authorization": "Bearer token"},
+    )
+
+    assert response.status_code == 200
+    assert "optimized_section" in response.text
+    assert "Optimized" in response.text
+    mock_get_current_user_info.assert_called_once()
+    mock_optimize_prompt_section_streamable.assert_called_once_with(
+        agent_id=1,
+        model_id=2,
+        task_description="Build an agent",
+        tenant_id="tenant-1",
+        language="en",
+        section_type="duty",
+        section_title="Agent Role",
+        current_content="Original",
+        feedback="Make it clearer",
+        tool_ids=[10],
+        sub_agent_ids=[20],
+        knowledge_base_display_names=["kb-a"],
+    )

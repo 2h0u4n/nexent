@@ -55,6 +55,10 @@ export const GENERATE_PROMPT_STREAM_TYPES = {
   AGENT_DISPLAY_NAME: "agent_display_name",
 } as const;
 
+export const OPTIMIZE_PROMPT_STREAM_TYPES = {
+  OPTIMIZED_SECTION: "optimized_section",
+} as const;
+
 export const TOOL_PARAM_TYPES = {
   STRING: "string",
   NUMBER: "number",
@@ -78,6 +82,9 @@ export type ToolSourceType =
 
 export type GeneratePromptStreamType =
   (typeof GENERATE_PROMPT_STREAM_TYPES)[keyof typeof GENERATE_PROMPT_STREAM_TYPES];
+
+export type OptimizePromptStreamType =
+  (typeof OPTIMIZE_PROMPT_STREAM_TYPES)[keyof typeof OPTIMIZE_PROMPT_STREAM_TYPES];
 
 // Agent call relationship node default size
 export const AGENT_CALL_RELATIONSHIP_NODE_SIZE = {

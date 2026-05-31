@@ -74,6 +74,47 @@ def gen_system_prompt_streamable(agent_id: int, model_id: int, task_description:
         yield f"data: {json.dumps({'success': False, 'error': {'code': error_code.value, 'message': error_message}}, ensure_ascii=False)}\n\n"
 
 
+def optimize_prompt_section_streamable(
+    agent_id: int,
+    model_id: int,
+    task_description: str,
+    tenant_id: str,
+    language: str,
+    section_type: str,
+    section_title: str,
+    current_content: str,
+    feedback: str,
+    tool_ids: Optional[List[int]] = None,
+    sub_agent_ids: Optional[List[int]] = None,
+    knowledge_base_display_names: Optional[List[str]] = None,
+):
+    try:
+        for optimized_section in optimize_prompt_section_stream_impl(
+            agent_id=agent_id,
+            model_id=model_id,
+            task_description=task_description,
+            tenant_id=tenant_id,
+            language=language,
+            section_type=section_type,
+            section_title=section_title,
+            current_content=current_content,
+            feedback=feedback,
+            tool_ids=tool_ids,
+            sub_agent_ids=sub_agent_ids,
+            knowledge_base_display_names=knowledge_base_display_names,
+        ):
+            yield f"data: {json.dumps({'success': True, 'data': optimized_section}, ensure_ascii=False)}\n\n"
+    except Exception as exc:
+        logger.error(f"Error optimizing prompt section: {exc}")
+        if isinstance(exc, AppException):
+            error_code = exc.error_code
+            error_message = exc.message
+        else:
+            error_code = ErrorCode.MODEL_PROMPT_GENERATION_FAILED
+            error_message = ErrorMessage.get_message(error_code)
+        yield f"data: {json.dumps({'success': False, 'error': {'code': error_code.value, 'message': error_message}}, ensure_ascii=False)}\n\n"
+
+
 def generate_and_save_system_prompt_impl(agent_id: int,
                                          model_id: int,
                                          task_description: str,
@@ -268,60 +309,24 @@ def optimize_prompt_section_impl(
     sub_agent_ids: Optional[List[int]] = None,
     knowledge_base_display_names: Optional[List[str]] = None,
 ) -> dict:
-    normalized_section_type = (section_type or "").strip()
-    if normalized_section_type not in {"duty", "constraint", "few_shots"}:
-        raise AppException(
-            ErrorCode.COMMON_PARAMETER_INVALID,
-            "Unsupported prompt section type."
-        )
-
-    if not (current_content or "").strip():
-        raise AppException(
-            ErrorCode.COMMON_MISSING_REQUIRED_FIELD,
-            "Current section content is required."
-        )
-
-    if not (feedback or "").strip():
-        raise AppException(
-            ErrorCode.COMMON_MISSING_REQUIRED_FIELD,
-            "Optimization feedback is required."
-        )
-
-    tool_info_list = _resolve_prompt_generation_tools(
+    optimize_context = _build_optimize_prompt_section_context(
         agent_id=agent_id,
-        tenant_id=tenant_id,
-        tool_ids=tool_ids,
-    )
-    knowledge_base_display_names = _resolve_knowledge_base_display_names(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        tool_info_list=tool_info_list,
-        knowledge_base_display_names=knowledge_base_display_names,
-    )
-    sub_agent_info_list = _resolve_prompt_generation_sub_agents(
-        agent_id=agent_id,
-        tenant_id=tenant_id,
-        sub_agent_ids=sub_agent_ids,
-    )
-
-    prompt_template = get_prompt_optimize_prompt_template(language)
-    prompt_context = join_info_for_optimize_prompt_section(
-        prompt_for_optimize=prompt_template,
-        section_type=normalized_section_type,
-        section_title=section_title or _default_prompt_section_title(normalized_section_type, language),
         task_description=task_description,
+        tenant_id=tenant_id,
+        language=language,
+        section_type=section_type,
+        section_title=section_title,
         current_content=current_content,
         feedback=feedback,
-        tool_info_list=tool_info_list,
-        sub_agent_info_list=sub_agent_info_list,
-        language=language,
+        tool_ids=tool_ids,
+        sub_agent_ids=sub_agent_ids,
         knowledge_base_display_names=knowledge_base_display_names,
     )
 
     optimized_content = call_llm_for_system_prompt(
         model_id=model_id,
-        user_prompt=prompt_context,
-        system_prompt=prompt_template["OPTIMIZE_SYSTEM_PROMPT"],
+        user_prompt=optimize_context["prompt_context"],
+        system_prompt=optimize_context["prompt_template"]["OPTIMIZE_SYSTEM_PROMPT"],
         tenant_id=tenant_id,
     ).strip()
 
@@ -329,10 +334,105 @@ def optimize_prompt_section_impl(
         raise AppException(ErrorCode.MODEL_PROMPT_GENERATION_FAILED)
 
     return {
-        "section_type": normalized_section_type,
-        "section_title": section_title or _default_prompt_section_title(normalized_section_type, language),
+        "section_type": optimize_context["section_type"],
+        "section_title": optimize_context["section_title"],
         "original_content": current_content,
         "optimized_content": optimized_content,
+    }
+
+
+def optimize_prompt_section_stream_impl(
+    agent_id: int,
+    model_id: int,
+    task_description: str,
+    tenant_id: str,
+    language: str,
+    section_type: str,
+    section_title: str,
+    current_content: str,
+    feedback: str,
+    tool_ids: Optional[List[int]] = None,
+    sub_agent_ids: Optional[List[int]] = None,
+    knowledge_base_display_names: Optional[List[str]] = None,
+):
+    optimize_context = _build_optimize_prompt_section_context(
+        agent_id=agent_id,
+        task_description=task_description,
+        tenant_id=tenant_id,
+        language=language,
+        section_type=section_type,
+        section_title=section_title,
+        current_content=current_content,
+        feedback=feedback,
+        tool_ids=tool_ids,
+        sub_agent_ids=sub_agent_ids,
+        knowledge_base_display_names=knowledge_base_display_names,
+    )
+
+    produce_queue = queue.Queue()
+    latest_content = {"content": ""}
+    final_content = {"content": ""}
+    error_holder = {"error": None}
+
+    def callback_fn(current_text: str):
+        latest_content["content"] = current_text
+        produce_queue.put(current_text)
+
+    def run_optimize():
+        try:
+            final_content["content"] = call_llm_for_system_prompt(
+                model_id=model_id,
+                user_prompt=optimize_context["prompt_context"],
+                system_prompt=optimize_context["prompt_template"]["OPTIMIZE_SYSTEM_PROMPT"],
+                callback=callback_fn,
+                tenant_id=tenant_id,
+            ).strip()
+        except Exception as exc:
+            logger.error(f"Error in prompt optimization generation: {exc}")
+            error_holder["error"] = exc
+        finally:
+            produce_queue.put(None)
+
+    thread = threading.Thread(target=run_optimize)
+    thread.start()
+
+    last_content = None
+
+    while thread.is_alive() or not produce_queue.empty():
+        if error_holder.get("error"):
+            thread.join(timeout=5)
+            raise error_holder["error"]
+
+        try:
+            produce_queue.get(timeout=0.5)
+        except queue.Empty:
+            continue
+
+        current_stream_content = latest_content["content"]
+        if current_stream_content != last_content:
+            yield {
+                "type": "optimized_section",
+                "section_type": optimize_context["section_type"],
+                "section_title": optimize_context["section_title"],
+                "content": current_stream_content,
+                "is_complete": False,
+            }
+            last_content = current_stream_content
+
+    thread.join(timeout=5)
+
+    if error_holder.get("error"):
+        raise error_holder["error"]
+
+    if not final_content["content"]:
+        raise AppException(ErrorCode.MODEL_PROMPT_GENERATION_FAILED)
+
+    yield {
+        "type": "optimized_section",
+        "section_type": optimize_context["section_type"],
+        "section_title": optimize_context["section_title"],
+        "content": final_content["content"],
+        "is_complete": True,
     }
 
 
@@ -424,6 +524,79 @@ def _resolve_prompt_generation_sub_agents(
     return get_enabled_sub_agent_description_for_generate_prompt(
         tenant_id=tenant_id, agent_id=agent_id
     )
+
+
+def _build_optimize_prompt_section_context(
+    agent_id: int,
+    task_description: str,
+    tenant_id: str,
+    language: str,
+    section_type: str,
+    section_title: str,
+    current_content: str,
+    feedback: str,
+    tool_ids: Optional[List[int]] = None,
+    sub_agent_ids: Optional[List[int]] = None,
+    knowledge_base_display_names: Optional[List[str]] = None,
+) -> dict:
+    normalized_section_type = (section_type or "").strip()
+    if normalized_section_type not in {"duty", "constraint", "few_shots"}:
+        raise AppException(
+            ErrorCode.COMMON_PARAMETER_INVALID,
+            "Unsupported prompt section type."
+        )
+
+    if not (current_content or "").strip():
+        raise AppException(
+            ErrorCode.COMMON_MISSING_REQUIRED_FIELD,
+            "Current section content is required."
+        )
+
+    if not (feedback or "").strip():
+        raise AppException(
+            ErrorCode.COMMON_MISSING_REQUIRED_FIELD,
+            "Optimization feedback is required."
+        )
+
+    tool_info_list = _resolve_prompt_generation_tools(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        tool_ids=tool_ids,
+    )
+    resolved_knowledge_base_display_names = _resolve_knowledge_base_display_names(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        tool_info_list=tool_info_list,
+        knowledge_base_display_names=knowledge_base_display_names,
+    )
+    sub_agent_info_list = _resolve_prompt_generation_sub_agents(
+        agent_id=agent_id,
+        tenant_id=tenant_id,
+        sub_agent_ids=sub_agent_ids,
+    )
+    prompt_template = get_prompt_optimize_prompt_template(language)
+    resolved_section_title = section_title or _default_prompt_section_title(
+        normalized_section_type, language
+    )
+    prompt_context = join_info_for_optimize_prompt_section(
+        prompt_for_optimize=prompt_template,
+        section_type=normalized_section_type,
+        section_title=resolved_section_title,
+        task_description=task_description,
+        current_content=current_content,
+        feedback=feedback,
+        tool_info_list=tool_info_list,
+        sub_agent_info_list=sub_agent_info_list,
+        language=language,
+        knowledge_base_display_names=resolved_knowledge_base_display_names,
+    )
+
+    return {
+        "section_type": normalized_section_type,
+        "section_title": resolved_section_title,
+        "prompt_template": prompt_template,
+        "prompt_context": prompt_context,
+    }
 
 
 def _start_generation_threads(content, prompt_for_generate, produce_queue, latest, stop_flags, tenant_id, model_id):
